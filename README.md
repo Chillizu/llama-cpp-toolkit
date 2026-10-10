@@ -15,6 +15,18 @@
 npx skills add Chillizu/llama-ranch
 ```
 
+### 首次使用
+
+安装后，在支持 Agent Skills 的目标 Agent 中这样开始：
+
+> 用 llama-ranch 检查本机硬件，并推荐一个能放进可用显存/内存的 GGUF 模型。先只给建议，不下载、不安装、不启动服务。
+
+选定模型后，可以继续要求它按检测到的后端带你准备运行环境；也可以提供已有模型和 `llama-server` 路径，让它帮你拟启动参数、接入客户端。
+
+> 我已经有模型文件和 llama-server。根据本机硬件给出启动命令，并说明每个参数；先不要执行。
+
+llama-ranch 是指导与脚本集合，不包含 `llama.cpp`、模型权重或已配置好的完整管理器。设备检测和模型搜索脚本可直接运行；`llmctl-template.sh` 是需要按本机路径和工作流调整的模板。模型搜索需要访问 Hugging Face。
+
 ### 功能
 
 - **检测设备** → `scripts/detect-device.sh`：OS、GPU 厂商/型号/显存（独显 vs 共享堆）、RAM、CPU 核数与 P/E 分层、建议后端（vulkan / cuda / rocm / metal / cpu），输出 JSON。多显卡时优先独显。
@@ -53,6 +65,18 @@ references/*.md                   按需加载的细节文档（bootstrap, detec
 ```bash
 npx skills add Chillizu/llama-ranch
 ```
+
+### First use
+
+After installation, start in an agent that supports Agent Skills:
+
+> Use llama-ranch to inspect this machine and recommend a GGUF model that fits available VRAM/RAM. Give me advice only; do not download, install, or start anything.
+
+Once you choose a model, ask it to guide setup for the detected backend. If you already have a model and `llama-server`, give it their paths and ask for a launch command and client wiring.
+
+> I already have a model file and llama-server. Give me a launch command for this machine and explain each option; do not run it yet.
+
+llama-ranch is a guide and script collection. It does not bundle `llama.cpp`, model weights, or a fully configured manager. Device detection and model search scripts can be run directly; `llmctl-template.sh` must be adapted to your paths and workflow. Model search requires access to Hugging Face.
 
 ### What it does
 
