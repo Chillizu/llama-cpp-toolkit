@@ -144,7 +144,7 @@ elif [ "$OS" = "macos" ] && command -v sysctl >/dev/null 2>&1; then
 fi
 cpu_cores=${cpu_cores:-0}; cpu_physical=${cpu_physical:-0}; cpu_efficient=${cpu_efficient:-0}
 
-# --- suggested backend ---
+# --- vendor-based backend hint (not a verified build/runtime capability) ---
 suggested_backend="cpu"
 case "$gpu_vendor" in
     nvidia) suggested_backend="cuda" ;;
@@ -153,6 +153,7 @@ case "$gpu_vendor" in
     apple) suggested_backend="metal" ;;
     *) suggested_backend="cpu"; notes+=("no GPU backend matched — falling back to CPU-only") ;;
 esac
+notes+=("suggested_backend is a vendor-based hint; verify the installed runtime's actual devices and build")
 
 # --- cross-check with an actual llama-server if present ---
 LLAMA_SERVER="${LLAMA_SERVER:-}"
@@ -176,7 +177,7 @@ Device report
   GPU memory        ${gpu_memory_gib} GiB ($memory_type)
   RAM               ${ram_gib} GiB total, ${ram_available_gib} GiB available
   CPU               $cpu_cores logical / $cpu_physical physical, ~$cpu_efficient eff-bucket cores
-  suggested backend $suggested_backend
+  backend hint (unverified) $suggested_backend
 EOF
 
 # --- JSON (single line; embed notes as JSON array) ---

@@ -42,10 +42,12 @@ curl -s http://127.0.0.1:<PORT>/v1/chat/completions \
 - Response is plain assistant text → it ignored/refused tools.
 - HTTP 500 with a "peg-native format" error → the llama.cpp tool parser doesn't recognize this architecture's tool markers (or the build is too old) → upgrade llama.cpp / use a tool-capable arch.
 
-## Agentic capability rules of thumb
+## Assess agent capability
 
-- **Small models are a trap for agents**: high chat speed, but tool-call reliability collapses below ~12B. A 1–3B model may "have tool calls" yet never produce working code. **For real agentic work use ≥12B.**
-- A model can have *formally* working tool calls but produce broken code — tool-call support ≠ agent quality. Bench it.
+- Do not use parameter count as a pass/fail threshold. Tool reliability depends on the exact model variant, architecture, template, parser, quantization, prompt, and task difficulty.
+- Verify that the installed llama.cpp build supports the architecture and the model's tool-call format. A model card's tool-use claim does not prove the selected runtime/parser can handle it.
+- Run representative tasks through the intended client and compare successful tool-call structure, correct arguments, task completion, and latency. A model can emit valid tool calls and still produce poor work.
+- If the user has no benchmark, start with a small task that reflects their use, report the limits of that check, then propose a more systematic comparison only if useful.
 
 ## Agent coding bench (methodology)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # llmctl-template.sh — parameterized personal model manager (llmctl-style).
-# Distilled from an existing working manager; adapt the VARS block to your device
-# (fill BACKEND_FLAGS from scripts/detect-device.sh, set MODEL_DIR / PIN_CPUS).
+# Distilled from an existing working manager; adapt the VARS block to your
+# environment after inspecting the installed runtime and model location.
 #
 # Subcommands:  list | start <name|#|name@variant> [args...] | stop | status
 #               profile <name|#> [variant] [args...] | profile --show [name]
@@ -24,15 +24,13 @@ SERVER_BIN="${LLMCTL_SERVER:-}"
 if [ -z "$SERVER_BIN" ] && [ -x "$HOME/llama.cpp/build/bin/llama-server" ]; then
     SERVER_BIN="$HOME/llama.cpp/build/bin/llama-server"
 elif [ -z "$SERVER_BIN" ]; then
-    SERVER_BIN="${LLMCTL_SERVER:-/usr/bin/llama-server}"
+    SERVER_BIN="$(command -v llama-server || true)"
 fi
 
-# Backend flags for YOUR device (fill from detect-device.sh). Examples:
-#   Intel/AMD integrated or Intel Arc            → -ngl -1 --no-mmap
-#   NVIDIA (CUDA build)                          → -ngl -1
-#   Apple Silicon (Metal build)                  → -ngl -1
-#   CPU-only build                               → (empty)
-BACKEND_FLAGS="${LLMCTL_BACKEND_FLAGS:--ngl -1 --no-mmap}"
+# Optional backend flags for YOUR verified llama-server build. Inspect
+# `llama-server --list-devices` and `--help` before setting these. No GPU
+# flags are assumed: vendor/backend mappings vary by OS, driver and build.
+BACKEND_FLAGS="${LLMCTL_BACKEND_FLAGS:-}"
 
 # Pin to performance cores if your CPU has P/E topology. Override with LLMCTL_PIN_CPUS.
 # Find the P-core list from lscpu -p / cpu topology sysfs on Linux.
@@ -41,9 +39,8 @@ PIN_CPUS="${LLMCTL_PIN_CPUS:-}"
 # Default port / context for a plain `start` with no args.
 DEFAULT_PORT=8080
 
-# Some GPU drivers need serialized submissions to avoid DeviceLost races with
-# IQ-quantized weights on large prefill + stream + tools. Safe default on.
-export GGML_VK_SERIALIZE_SUBMISSIONS="${GGML_VK_SERIALIZE_SUBMISSIONS:-1}"
+# Set GGML_VK_SERIALIZE_SUBMISSIONS in the environment only when a verified
+# Vulkan driver issue on this host calls for it. Do not impose it globally.
 # ===========================================================================
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" "$PROFILE_DIR"
@@ -97,7 +94,7 @@ find_model_by_query() {
         total=$(find_models | wc -l | tr -d ' ')
         if [ "$query" -lt 1 ] || [ "$query" -gt "$total" ]; then
             return 0    # out of range -> empty; do NOT fall through to grep
-                        # (a bare number like 5 would silently match "qwen2.5...")
+                        # (a bare number could match a model's version string)
         fi
         while IFS= read -r model; do
             if [ "$i" -eq "$query" ]; then echo "$model"; return 0; fi
@@ -179,6 +176,10 @@ cmd_start() {
         echo "Usage: llmctl start <name|#> [variant] [llama-server args...]"
         cmd_list; exit 1
     fi
+    if [ -z "$SERVER_BIN" ] || [ ! -x "$SERVER_BIN" ]; then
+        echo "llama-server not found; install/build it or set LLMCTL_SERVER=/path/to/llama-server" >&2
+        exit 1
+    fi
     local query="$1"; shift
     # Accept 'model@variant' → canonical two-arg form
     if [[ "$query" == *"@"* ]]; then
@@ -259,8 +260,8 @@ cmd_start() {
         printf '%sHealth: loading…%s  follow with: status | log -f\n' "$C_YELLOW" "$C_RESET"
     fi
 
-    # Priority boost (optional, needs passwordless sudo)
-    if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    # Priority boost is opt-in; it needs passwordless sudo and host-specific intent.
+    if [ "${LLMCTL_PRIORITY_BOOST:-0}" = "1" ] && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
         sudo renice -n -10 -p "$pid" >/dev/null 2>&1 || true
         for tid in $(python3 -c "
 import glob

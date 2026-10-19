@@ -1,29 +1,42 @@
 #!/usr/bin/env bash
-# recommend-models.sh — live HuggingFace GGUF search with fits hints.
+# recommend-models.sh — live HuggingFace GGUF search with memory estimates.
 # Usage:
-#   recommend-models.sh "<query>" [--ram <gib>] [--ctx <tokens>]
+#   recommend-models.sh "<query>" [--ram <gib>] [--ctx <tokens>] [--reserve <gib>]
 # Stages (the model list is fetched live):
 #   1. search        /api/models?search=..&filter=gguf&full=true  → GGUF sibling filenames
 #   2. sizes         /api/models/<id>?blobs=true per model         → .gguf file sizes
 #   3. KV math       base-model config.json (from base_model: tag) → real n_layer/kv_heads/head_dim
-# Then prints a table with a fits hint against --ram (weights + estimated fp16 KV + ~2 GiB buffer).
+# Then prints model sizes and estimated fp16 KV. A fit result requires an explicit
+# runtime headroom via --reserve; the helper does not assume a universal buffer.
 # Networks that block HF directly: set HF_PROXY (e.g. HF_PROXY=socks5h://127.0.0.1:7891).
 # Falls back to a web_search hint if the API is unreachable.
 # bash 3.2-compatible (no mapfile) — works on stock macOS.
 set -euo pipefail
 
 query="${1:-}"
-[ -z "$query" ] && { echo "usage: $0 \"<query>\" [--ram <gib>] [--ctx <tokens>]"; exit 1; }
+[ -z "$query" ] && { echo "usage: $0 \"<query>\" [--ram <gib>] [--ctx <tokens>] [--reserve <gib>]"; exit 1; }
 shift
 
-ram=""; ctx=""
+ram=""; ctx=""; reserve=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ram) ram="$2"; shift 2 ;;
-        --ctx) ctx="$2"; shift 2 ;;
+        --ram|--ctx|--reserve)
+            [ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 1; }
+            case "$1" in
+                --ram) ram="$2" ;;
+                --ctx) ctx="$2" ;;
+                --reserve) reserve="$2" ;;
+            esac
+            shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
+
+is_number() { [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; }
+[ -z "$ram" ] || is_number "$ram" || { echo "--ram must be a non-negative GiB value" >&2; exit 1; }
+[ -z "$reserve" ] || is_number "$reserve" || { echo "--reserve must be a non-negative GiB value" >&2; exit 1; }
+[ -z "$ctx" ] || [[ "$ctx" =~ ^[1-9][0-9]*$ ]] || { echo "--ctx must be a positive token count" >&2; exit 1; }
+[ -z "$reserve" ] || [ -n "$ram" ] || { echo "--reserve requires --ram" >&2; exit 1; }
 
 API="https://huggingface.co/api/models"
 LIMIT=20
@@ -107,15 +120,16 @@ print(json.dumps(acc))
     fi
 done
 
-python3 - "$ram" "$ctx" "$query" "$resp" "$blobs" "$configs" <<'PY'
+python3 - "$ram" "$ctx" "$reserve" "$query" "$resp" "$blobs" "$configs" <<'PY'
 import json, re, sys
 
 ram = float(sys.argv[1]) if sys.argv[1] else None
 ctx = int(sys.argv[2]) if sys.argv[2] else None
-query = sys.argv[3]
-resp = json.loads(sys.argv[4])
-blobs = json.loads(sys.argv[5])     # id -> siblings[] (with size)
-configs = json.loads(sys.argv[6])   # id -> {n_layer,n_kv,head_dim}
+reserve = float(sys.argv[3]) if sys.argv[3] else None
+query = sys.argv[4]
+resp = json.loads(sys.argv[5])
+blobs = json.loads(sys.argv[6])     # id -> siblings[] (with size)
+configs = json.loads(sys.argv[7])   # id -> {n_layer,n_kv,head_dim}
 
 QUANT = re.compile(r'\b(I?Q\d+_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*|BF16|FP16|FP32|F16|F32)\b', re.I)
 SPLIT = re.compile(r'-\d{5}-of-\d{5}\.gguf$', re.I)
@@ -126,7 +140,7 @@ def kv_bytes_per_token(cfg):
     return 2 * cfg["n_layer"] * cfg["n_kv"] * cfg["head_dim"] * 2
 
 # Key sizes by (repo_id, filename): bare filenames collide across repos
-# ("qwen2.5-7b-instruct-q4_k_m.gguf" exists in many), which used to attach
+# ("example-model-instruct-q4_k_m.gguf" exists in many), which used to attach
 # the wrong repo's size to a row.
 by_name = {}
 for repo, sibs in blobs.items():
@@ -174,14 +188,14 @@ if not rows:
     print("No GGUF siblings found for query. Try web_search:  %s GGUF site:huggingface.co" % query)
     sys.exit(0)
 
-hdr = f"{'model':<40} {'quant':<12} {'size_GiB':>9} {'KV_GiB':>8}  fits"
+hdr = f"{'model':<40} {'quant':<12} {'size_GiB':>9} {'KV_GiB':>8}  fit estimate"
 print(hdr); print("-" * len(hdr))
 for mid, quant, size_b in rows:
     gib = (size_b / GB) if size_b else None
     cfg = configs.get(mid)
     kv_gib = None
-    if cfg:
-        kv_gib = kv_bytes_per_token(cfg) * (ctx or 8192) / GB
+    if cfg and ctx:
+        kv_gib = kv_bytes_per_token(cfg) * ctx / GB
     if gib is None:
         print(f"{mid[:39]:<40} {quant:<12} {'?':>9} {'?':>8}  -")
         continue
@@ -190,8 +204,13 @@ for mid, quant, size_b in rows:
         if kv_gib is None:
             fits = "unknown"
         else:
-            headroom = gib + kv_gib + 2
-            fits = "OK" if headroom <= ram else "no"
+            base_need = gib + kv_gib
+            if base_need > ram:
+                fits = "no (weights+KV)"
+            elif reserve is None:
+                fits = "uncertain; reserve?"
+            else:
+                fits = "yes (estimate)" if base_need + reserve <= ram else "no (with reserve)"
     kv_display = f"{kv_gib:>8.2f}" if kv_gib is not None else f"{'?':>8}"
     print(f"{mid[:39]:<40} {quant:<12} {gib:>8.1f} {kv_display}  {fits}")
 PY

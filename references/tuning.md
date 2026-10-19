@@ -1,63 +1,50 @@
-# Inference-time tuning
+# Measurement-led inference tuning
 
-"微调" here means **inference-time tuning only** — quantization level, context size, thread count, samplers, KV-cache type — to fit a given device. Not training.
+Tuning means adjusting inference settings for the selected model, actual llama.cpp build, hardware, and user workload. There is no universal best quant, context, thread count, offload value, or sampler profile.
 
-## Quantization
+## Establish a baseline
 
-- **K-quants** (`Q4_K_M`, `Q5_K_M`, …) are the stable middle ground.
-- **IQ-quants** (`IQ3_XXS`, `IQ2_S`, …) are smaller but the dequant shader is heavier on some backends — **lower quant is not necessarily faster**. Measure decode, don't assume a smaller file is faster.
-- If decode does not improve with a smaller quant, you've hit the dequant/bandwidth mix — stop there; further shrinking only loses quality.
+Before changing flags, record:
 
-## Context (`-c`)
+- exact model source, architecture, quantization, and llama.cpp version/build;
+- actual device/backend and memory placement from runtime output;
+- representative prompt, requested output length, context occupancy, and task result;
+- load time, time to first token/prefill, decode rate, peak memory, and stability when available.
 
-| scenario | `-c` | note |
-|---|---|---|
-| short prompts, light tooling | 8192–16384 | fast, cheap |
-| heavy tool / agent prompts | 32768–49152 | fits a 10K–35K system+tool prompt |
-| very long sessions | 65536+ | KV alone is GBs — check budget |
-| unset | model default (often large) | memory hog |
+Use a repeatable workload that resembles how the user will use the model. Separate quality/capability checks from speed checks. Change one setting at a time and keep the previous working command so changes can be reverted.
 
-`-np` splits the total context across slots: **a single interactive/agent client should use `-np 1`** so the whole `-c` belongs to one slot. With `-np > 1`, each slot gets only `-c / np`.
+## Select quantization and model placement
 
-## Threads (`-t`)
+- Compare the exact model variants that are available and supported. A smaller quant saves weight memory but can reduce task quality; it is not guaranteed to decode faster.
+- Do not describe one quant family as universally safe or fastest. Use current model/runtime/backend evidence and measure candidates on the target task.
+- Choose GPU offload from the model's weight/KV budget, actual backend support, and observed free memory. Confirm placement after load; the requested offload value does not prove all layers fit or use the intended device.
+- On shared/unified memory, account for the OS, desktop, and other active applications. On multi-GPU hosts, verify which devices receive weights and whether distribution is supported.
 
-Sweep to find the decode sweet spot — restart with each `-t`, then time a short completion (max_tokens ~64, temp 0, twice, take the mean):
+## Set context and KV cache
 
-```bash
-for t in 8 6 4 2; do
-  restart server with -t $t
-  curl /v1/chat/completions ×2 | jq .timings.predicted_per_second
-done
-```
+Choose context from the user's real prompt and session needs, the model's supported context/template, and available memory. Include system instructions, tool schemas, retrieved documents, conversation history, and generated output. Do not copy a fixed context tier or extend the model's supported context without verified runtime/model evidence.
 
-Patterns (verify on your hardware, they vary):
-- Large dense models: sweet spot near the physical P-core count (more logical threads than that hurts).
-- Smaller models: often fastest at *fewer* threads (counter-intuitive) or insensitive.
-- Sub-2B models: insensitive — keep a default.
+KV-cache size depends on model architecture, context, cache type, and runtime implementation. Use the exact model metadata or runtime reporting. Quantized KV can save memory but support and quality/stability vary by architecture/backend/build; verify from current llama.cpp support and a representative multi-turn task before recommending it.
 
-As a rough decode ceiling, `tokens/s ≈ effective_bandwidth_GiB_s / weights_GiB`. This is only a bandwidth-bound estimate; cache traffic, dequantization, compute, and kernel overhead make real throughput lower. Once decode stops improving with tuning you're at the ceiling — the only real levers are a smaller model/MoE or a faster bus. Stop tuning there.
+Check how the installed runtime interprets context and parallel slots. If multiple slots are in use, verify how the total context budget is divided rather than assuming each client receives the full configured value.
 
-## Decay behavior
+## Tune CPU and GPU use
 
-- **decode decays as context fills** (fewer unused KV slots → more effective work per step).
-- **prefill decays with prompt depth** (deeper segments are slower).
-- Consequence: for very long contexts, **grow the context incrementally** and reuse the prompt cache; do not fill a huge context in one shot — the cost is far above the flat estimate.
-- Cross-time comparisons are only valid at the same thermal state: a hot device throttles decode. If "it got slower", check temperature before suspecting config.
+- Read the installed binary's help and the host's CPU topology before choosing thread counts or affinity.
+- Sweep a small range around values justified by physical cores, competing workloads, and runtime behavior. Use the same prompt and thermal state; keep a setting only if it improves the user's metric.
+- Avoid pinning threads by a guessed P-core list or reducing OS memory management without evidence of a bottleneck.
+- Treat backend-specific flags, serialization workarounds, and priority changes as opt-in fixes for observed conditions, not general defaults.
 
-## Samplers
+## Choose samplers and templates
 
-- **Tool-call degradation**: if tool arguments degenerate into repeating characters, the server's default penalty samplers are punishing JSON punctuation. Fix by excluding penalties and enumerating samplers explicitly:
-  `--samplers top_k;top_p;min_p;temperature`
-- **Agentic template**: deterministic tool loops want low temperature + controlled penalties and **reasoning/thinking OFF** (per-step thinking before every tool call drags the loop):
-  ```
-  --reasoning off --reasoning-format deepseek
-  --temp 0.2 --top-p 0.85 --top-k 20 --min-p 0.1
-  --presence-penalty 1.5 --repeat-penalty 1.1
-  -c <ctx> -np 1 --jinja
-  --samplers penalties;top_k;top_p;min_p;temperature
-  ```
-- Modern models already suppress repetition; over-strong penalties can hurt long-tail tokens. Measure before changing defaults — don't follow convention blindly. Note the two failure modes: for *tool-arg garbage loops* drop penalties entirely (see `stability.md`); the template above keeps penalties only because that profile is verified to copy JSON exactly.
+First identify the model's expected chat template, reasoning/tool-call format, and the installed runtime's supported sampler options. Then choose a minimal configuration for the task:
 
-## Priority (optional)
+- deterministic structured output or tool use may need low randomness and a compatible tool parser;
+- open-ended writing may benefit from a different sampling range;
+- penalties can help or damage output depending on the model and prompt.
 
-`renice -10` the main + active worker threads and set `oom_score_adj = -1000` (needs privileged access); lower `vm.swappiness` so the model's pages stay resident. Verify with `ps -o ni -p <pid>` → should be `-10`.
+Do not paste a canned sampler chain without checking the model template and `llama-server --help`. Test actual tool arguments, reasoning/content fields, and multi-turn output when those matter. Use the failure patterns in `stability.md` to diagnose observed regressions.
+
+## Compare and stop
+
+Report before/after values and the workload used. If a change improves speed but damages task quality, context, stability, or memory headroom, it is not an overall improvement. Stop tuning when changes no longer affect the user's target metric; consider a different model, quant, backend, or context plan instead of continuing to optimize irrelevant flags.

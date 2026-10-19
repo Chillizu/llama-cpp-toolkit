@@ -1,37 +1,37 @@
-# Stability matrix
+# Troubleshooting patterns
 
-Common symptoms → likely causes → fixes. Verify the trigger on your backend before applying a fix.
+Use symptom, logs, model metadata, runtime version, and backend evidence to form a diagnosis. Treat each item below as a hypothesis to verify on the current setup, not a universal mapping from symptom to one flag.
 
-## Reasoning-preserving templates swallow output
+## Reasoning or visible content is missing
 
-- **Symptom**: everything lands in `reasoning_content`, `content` is empty.
-- **Cause**: chat templates marked reasoning-preserving (e.g. Qwen3, gemma-4, MiniCPM5 families) route the whole generation into reasoning.
-- **Fix**: `--reasoning off --reasoning-format deepseek`, and have the client assert `content` is non-empty.
+- **Symptom**: a response appears blank, or text is only present in a separate reasoning field.
+- **Check**: inspect the raw API response, selected model's chat template, reasoning mode, and client handling of content/reasoning fields.
+- **Next step**: compare the model's expected template with current llama.cpp options and client behavior. Change one supported option at a time and verify that the user-visible field contains the intended answer.
 
-## Server dies on large prefill + stream + tools
+## Server exits or loses a GPU device during a request
 
-- **Symptom**: `DeviceLost` / GPU queue submit error after a big (~1500-token) prefill with streaming and tool calls.
-- **Cause**: async submission race with IQ-quantized dequant shaders on some GPU drivers; K-quants are immune.
-- **Fix**: enable serialized GPU submissions (`GGML_VK_SERIALIZE_SUBMISSIONS=1`, set by the template by default). Re-verify after changing quantization.
+- **Symptom**: process exit, `DeviceLost`, GPU queue submission errors, or failures after a particular prompt/quant/workload.
+- **Check**: preserve the full server log and exact command; note backend, driver, llama.cpp build, model architecture/quant, memory use, and whether streaming/tool use/prefill changes the trigger.
+- **Next step**: reproduce with a smaller workload and compare a known-supported quant/backend. Apply backend-specific workarounds only when current issue/build evidence supports them. For a confirmed Vulkan submission issue, the user can opt into `GGML_VK_SERIALIZE_SUBMISSIONS=1`; the manager template leaves this unset by default.
 
-## Alive but greedy output is garbage / repeats
+## Output becomes repetitive or corrupted
 
-- **Symptom**: server healthy, but greedy output is garbled / repeats.
-- **Cause**: KV cache poisoned by `q8_0`.
-- **Fix**: use `fp16` or `q4_0` KV cache; do not set `-ctk/-ctv q8_0`.
+- **Symptom**: healthy server but malformed or repeating output, often after multiple turns.
+- **Check**: exact model and template, KV-cache type, context occupancy, backend/build version, and raw response fields.
+- **Next step**: return to a known-supported cache type for this model/backend and compare a short single-turn and multi-turn request. Do not assume one cache type is defective across all architectures.
 
-## Tool arguments degenerate into a repeated character
+## Tool-call arguments are malformed
 
-- **Symptom**: tool call args become "assassass…" loops.
-- **Cause**: default penalty samplers punish the JSON punctuation the tool format needs.
-- **Fix**: `--samplers top_k;top_p;min_p;temperature` (drop `penalties`). Keep penalties in the *agentic* profile if that profile is verified to copy JSON exactly — distinguish the two cases (garbage loop ⇒ drop penalties; verified exact-copy ⇒ keep). See the complementary agentic-template recipe in `tuning.md` (Samplers).
+- **Symptom**: invalid JSON, repeated characters, missing tool calls, or arguments that do not match the schema.
+- **Check**: model capability and template, server tool parser, client schema, sampler options supported by this build, and an actual raw tool-call response.
+- **Next step**: simplify the request, confirm parser/architecture compatibility, then change only supported sampler settings and re-run the same tool task. Do not apply a canned sampler chain without verifying the model and runtime.
 
-## Profile file missing trailing newline
+## Manager exits while loading a profile
 
-- **Symptom**: manager `start` exits silently (exit 1) with no output.
-- **Cause**: profile arg file written without a final `\n`; the `read -ra` fails under `set -e`.
-- **Fix**: write profiles with a trailing `\n`; verify `tail -c1 <file> | od -An -c` shows `\n`. Managers should `read ... || true` defensively.
+- **Symptom**: `llmctl-template.sh start` exits while reading a profile.
+- **Check**: inspect the profile file, its quoting, and final newline; shell argument files are not a general-purpose configuration format.
+- **Next step**: preserve the required newline and validate options against the installed `llama-server --help`. The template handles a failed `read` defensively, but profile content still needs review.
 
-## Regression test
+## Verify a fix
 
-After any change, run: a large system prompt + `stream: true` + tools for 4 consecutive rounds; the server must stay alive and `content` must be non-empty. This catches the reasoning-swallow, DeviceLost, and KV-poison classes together.
+Repeat the request that produced the failure, then check the raw result, server logs, memory, and process state. For agent or multimodal use, verify that exact capability through the intended client. Keep the before/after command and evidence so the change can be reversed if the diagnosis was wrong.
