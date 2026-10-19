@@ -1,106 +1,119 @@
-# llama-ranch
+# llama-cpp-toolkit
 
-> 设备无关的本地 GGUF 大模型 Agent Skill —— 在任何 GPU 上跑、选、调本地模型。
-> Device-agnostic Agent Skill for running, recommending, and tuning local GGUF LLMs on any GPU.
+> 本地 LLM 工具包，聚焦 llama.cpp 与 GGUF：先了解你的用途，再审视本机条件、比较当前可获取的模型，并按实测逐步跑通与调优。
+>
+> A local LLM toolkit focused on llama.cpp and GGUF: start from your task and hardware, compare current model options, then set up and tune from measured results.
 
-[English](#english) · [中文](#中文)
+Formerly **llama-ranch**.
+
+[中文](#中文) · [English](#english)
 
 ## 中文
 
-**llama-ranch** 帮你走完"从零到跑起来并调好"的全流程：检测本机硬件 → 选一个适配显存/内存的模型与量化 → 推理期调参（量化级别 / 上下文长度 / 线程数 / 采样器 / KV cache 类型）→ 启动 llama-server → 可选接入 agentic 客户端（pi / OpenCode）到本地 OpenAI 兼容端点。全部经验去厂商化、无硬编码数字，按你的机器实测为准。
+llama-cpp-toolkit 是一个以 Agent Skill 为主、附带小型脚本和参考资料的本地推理工具包。它根据用户目标和当前设备情况，动态引导模型选型、来源核对、运行环境准备和推理调优。
 
 ### 安装
 
 ```bash
-npx skills add Chillizu/llama-ranch
+npx skills add Chillizu/llama-cpp-toolkit
 ```
 
 ### 首次使用
 
-安装后，在支持 Agent Skills 的目标 Agent 中这样开始：
+在支持 Agent Skills 的 Agent 中，描述任务和偏好：
 
-> 用 llama-ranch 检查本机硬件，并推荐一个能放进可用显存/内存的 GGUF 模型。先只给建议，不下载、不安装、不启动服务。
+> 我想在本地做代码协作，优先保护隐私，也希望模型能调用工具。先检查这台机器的硬件和已有推理环境，再比较适合的模型家族、架构、规模和可获取的 GGUF 文件。解释推荐依据、来源和不确定性；现在只给建议，不要下载、安装或启动。
 
-选定模型后，可以继续要求它按检测到的后端带你准备运行环境；也可以提供已有模型和 `llama-server` 路径，让它帮你拟启动参数、接入客户端。
+选定具体模型来源和文件后，如果你明确要求它代为准备和启动，它应先复用已有运行时，并根据检测到的系统、后端和模型生成步骤。若模型来源、持久配置或服务范围仍有实质歧义，再先与你确认。
 
-> 我已经有模型文件和 llama-server。根据本机硬件给出启动命令，并说明每个参数；先不要执行。
+### 能做什么
 
-llama-ranch 是指导与脚本集合，不包含 `llama.cpp`、模型权重或已配置好的完整管理器。设备检测和模型搜索脚本可直接运行；`llmctl-template.sh` 是需要按本机路径和工作流调整的模板。模型搜索需要访问 Hugging Face。
+- **审视本机**：识别操作系统、CPU、可用内存、GPU 与现有推理环境；将设备检测脚本作为线索，并用实际运行时信息校正。
+- **按任务选模型**：根据用途、质量/速度偏好、上下文、工具或模态需求，动态比较当前模型家族、架构、规模、量化和 GGUF 来源，不使用固定的“最佳模型”清单。
+- **估算并核对适配度**：把权重、模型架构对应的 KV cache、上下文和后端开销纳入估算；区分独立显存与共享内存，并说明不确定性。
+- **跑通与调优**：按现有环境准备 llama.cpp/llama-server；先完成代表性任务的基线，再根据实际速度、内存和效果逐项调优。
+- **接入客户端**：按需连接本地 OpenAI 兼容端点，并验证客户端和模型是否具备所需能力。
+- **可选管理器**：`scripts/llmctl-template.sh` 提供个人管理器起点；它需要适配，不是首次使用的前置条件。
 
-### 功能
+首次模型跑通后，如果用户会反复切换模型、配置启动方案或连接客户端，再询问是否需要 `llmctl` 风格的管理器；只需建议时就不生成管理配置。
 
-- **检测设备** → `scripts/detect-device.sh`：OS、GPU 厂商/型号/显存（独显 vs 共享堆）、RAM、CPU 核数与 P/E 分层、建议后端（vulkan / cuda / rocm / metal / cpu），输出 JSON。多显卡时优先独显。
-- **选模型** → `scripts/recommend-models.sh "<名字>" --ram <gib> [--ctx <tokens>]`：实时 HuggingFace GGUF 搜索，含各量化体积与精确 fp16 KV cache 预算 → fits 提示。无硬编码模型表；分片 GGUF 自动合并求和；网络屏蔽 HF 时设 `HF_PROXY`。
-- **调优** → `references/tuning.md`：容量公式、KV cache 数学（fp16 / q4_0 / q8_0 取舍）、`-c` 上下文档位、`-t` 线程扫描、采样器设置、decode 天花板、衰减行为。
-- **运行** → `llama-server -m model.gguf <flags>`，或用 `scripts/llmctl-template.sh`（参数化 `list/start/stop/status/profile/client`）搭个人管理器。
-- **排障** → `references/stability.md`：通用 bug/修复矩阵（reasoning 模板吞输出、DeviceLost 竞态、q8_0 KV 毒化、工具参数退化、profile 缺尾换行）。
-- **Agentic** → `references/agentic.md`：任意 OpenAI 兼容客户端接本地端点（`OPENAI_BASE_URL` 注入）、工具调用验证、agent bench 方法论。
-- **从零起步** → `references/bootstrap.md`：装/编 llama.cpp（按检测后端选 cmake flag）、验证 `--list-devices`、下载模型。
+### 脚本是辅助工具
 
-### 目录结构
-
-```
-SKILL.md                          frontmatter(name/description) + 决策流
-scripts/detect-device.sh          一键设备能力报告 → JSON
-scripts/recommend-models.sh       实时 HuggingFace GGUF 搜索 + fits 提示
-scripts/llmctl-template.sh        参数化个人模型管理器
-references/*.md                   按需加载的细节文档（bootstrap, detection, selection, tuning, stability, agentic, manager）
+```text
+scripts/detect-device.sh       设备信息摘要；启发式结果需用本机运行时校验
+scripts/recommend-models.sh    实时 Hugging Face GGUF 文件搜索与内存估算
+scripts/llmctl-template.sh     个人模型进程管理器模板
+references/*.md               按需读取的检测、选型、安装、调优和排障资料
 ```
 
-### 说明
+需要单独查询时，模型搜索助手可接收具体候选家族、可用于模型的内存预算和目标上下文：
 
-- 仅推理期调参，不含训练。
-- 经验已去厂商化：不硬编码设备专属吞吐/内存数字，按你的硬件实测。
-- 客户端无关：`client` 子命令注入 `OPENAI_BASE_URL`/`OPENAI_API_KEY`，任何 OpenAI 兼容客户端（CLI、聊天 UI、agent）均可接入。
-- 依赖：bash（兼容 3.2，推荐 4+）、curl、python3；jq 可选（detect-device 缺失时自动回退 python3）。
+```bash
+scripts/recommend-models.sh "<candidate-family>" --ram <available-memory-gib> --ctx <tokens> [--reserve <runtime-headroom-gib>]
+```
+
+`--ram` 是所选内存池当前可供本次运行使用的容量，不是机器标称总内存；`--reserve` 是还要为运行时和其他占用留出的余量，会在估算中另行扣除。两者应来自当前设备和工作负载的实际情况。未提供上下文或运行时余量时，助手不会给出确定的 fit 结论。Skill 会根据系统、用户目标和可用工具决定是否调用脚本；脚本结果不取代模型能力、来源、运行时兼容性和硬件适配的综合判断。
+
+### 范围与要求
+
+- 当前重点是 `llama.cpp` 与 GGUF；其他本地运行时可以讨论，但会标明未经本项目工具验证的部分。
+- 不包含 `llama.cpp` 可执行文件或模型权重，也不默认下载、安装或启动服务。
+- 模型来源查询依赖网络；模型搜索脚本使用 Hugging Face。网络受限时应说明限制，并根据用户提供的文件或来源资料继续。
+- 脚本需要 bash、`curl` 和 `python3`；`jq` 可选。硬件检测依赖各操作系统提供的诊断工具，平台覆盖并不完全相同。
+- 仅指导推理期运行和调优，不训练或微调权重。
 
 ---
 
 ## English
 
-**llama-ranch** takes you from zero to a tuned local model: detect the machine → pick a model + quantization that fits its VRAM/RAM → tune inference-time settings (quantization level, context length, threads, samplers, KV-cache type) → run a llama-server → optionally wire an agentic client (pi / OpenCode) to the local OpenAI-compatible endpoint. Empirical insight is de-vendored; measure on your hardware.
+llama-cpp-toolkit is an Agent Skill with small helper scripts and on-demand references. It adapts model discovery, source checks, setup, and inference tuning to the user's goal and the machine's current state.
 
 ### Install
 
 ```bash
-npx skills add Chillizu/llama-ranch
+npx skills add Chillizu/llama-cpp-toolkit
 ```
 
 ### First use
 
-After installation, start in an agent that supports Agent Skills:
+In an agent that supports Agent Skills, describe your task and preferences:
 
-> Use llama-ranch to inspect this machine and recommend a GGUF model that fits available VRAM/RAM. Give me advice only; do not download, install, or start anything.
+> I want a local coding assistant, with privacy as a priority and reliable tool use. Inspect this machine's hardware and existing inference setup, then compare suitable model families, architectures, size tiers, and available GGUF files. Explain the evidence, sources, and uncertainty. Give recommendations only; do not download, install, or start anything yet.
 
-Once you choose a model, ask it to guide setup for the detected backend. If you already have a model and `llama-server`, give it their paths and ask for a launch command and client wiring.
+After choosing an exact source and file, explicitly ask it to perform setup and launch if you want those actions. It should reuse an existing runtime and tailor steps to the detected OS, backend, and model. It should ask first only when the model source, persistent changes, or service scope is materially ambiguous.
 
-> I already have a model file and llama-server. Give me a launch command for this machine and explain each option; do not run it yet.
+### Capabilities
 
-llama-ranch is a guide and script collection. It does not bundle `llama.cpp`, model weights, or a fully configured manager. Device detection and model search scripts can be run directly; `llmctl-template.sh` must be adapted to your paths and workflow. Model search requires access to Hugging Face.
+- **Inspect the machine:** identify the OS, CPU, available memory, GPU, and existing inference setup. Treat detector output as a clue and cross-check it with the actual runtime.
+- **Choose for the task:** dynamically compare current model families, architectures, size tiers, quantizations, and GGUF sources against the task, quality/speed preferences, context, tool use, and modality needs. There is no fixed “best model” list.
+- **Estimate and verify fit:** account for weights, architecture-specific KV cache, context, and backend overhead; distinguish dedicated VRAM from shared memory and state uncertainty.
+- **Run and tune:** prepare llama.cpp/llama-server for the existing environment, establish a representative baseline, then tune against measured speed, memory, and task quality.
+- **Connect clients:** wire a local OpenAI-compatible endpoint when requested and verify the client and model support the needed capability.
+- **Optional manager:** `scripts/llmctl-template.sh` is a starting point for personal process management. It needs adaptation and is not required for first use.
 
-### What it does
+After the first model works, if the user expects to switch models, reuse launch profiles, or connect clients repeatedly, ask whether they want an `llmctl`-style manager. If they only need recommendations, do not generate manager configuration.
 
-- **Detect** → `scripts/detect-device.sh`: OS, GPU vendor/model/memory (dedicated vs shared heap), RAM, CPU cores incl. P/E split, suggested backend (vulkan / cuda / rocm / metal / cpu). Emits JSON. Prefers the discrete GPU on multi-adapter machines.
-- **Pick** → `scripts/recommend-models.sh "<name>" --ram <gib> [--ctx <tokens>]`: live HuggingFace GGUF search with per-quant file sizes and exact fp16 KV-cache budget → fits hints. No hardcoded model tables; split GGUFs are merged and summed. Set `HF_PROXY` if your network blocks HF directly.
-- **Tune** → `references/tuning.md`: capacity formula, KV-cache math (fp16 / q4_0 / q8_0 tradeoffs), `-c` context tiers, `-t` thread sweep, sampler setup, decode ceiling, decay behavior.
-- **Run** → `llama-server -m model.gguf <flags>`, or build a personal manager from `scripts/llmctl-template.sh` (parameterized `list/start/stop/status/profile/client`).
-- **Fix** → `references/stability.md`: generic bug/fix matrix (reasoning-preserving template swallow, DeviceLost races, q8_0 KV poisoning, tool-arg degeneration, trailing-newline profile bug).
-- **Agentic** → `references/agentic.md`: wire any OpenAI-compatible client to the local endpoint (`OPENAI_BASE_URL` injection), tool-call verification, agent bench methodology.
-- **Bootstrap** → `references/bootstrap.md`: build/install llama.cpp with the detected backend, verify `--list-devices`, download a model.
+### Helper scripts
 
-### Layout
-
-```
-SKILL.md                          frontmatter (name/description) + decision flow
-scripts/detect-device.sh          one-shot device capability report → JSON
-scripts/recommend-models.sh       live HuggingFace GGUF search + fits hints
-scripts/llmctl-template.sh        parameterized personal model manager
-references/*.md                   on-demand detail (bootstrap, detection, selection, tuning, stability, agentic, manager)
+```text
+scripts/detect-device.sh       hardware summary; heuristic results need runtime verification
+scripts/recommend-models.sh    live Hugging Face GGUF file search and memory estimate
+scripts/llmctl-template.sh     personal model-manager template
+references/*.md               on-demand detection, selection, setup, tuning, and troubleshooting guides
 ```
 
-### Notes
+For a targeted lookup, the model-search helper accepts a candidate family, the memory budget available to the model, and the intended context:
 
-- Inference-time tuning only — no training.
-- Empirical insight is de-vendored: no device-specific throughput/memory numbers are hardcoded; measure on your hardware.
-- Client-agnostic: the `client` subcommand injects `OPENAI_BASE_URL`/`OPENAI_API_KEY`, so any OpenAI-compatible client (CLI, chat UI, agent) plugs in.
-- Requires bash (3.2-compatible, 4+ recommended), curl, python3; jq optional (detect-device falls back to python3).
+```bash
+scripts/recommend-models.sh "<candidate-family>" --ram <available-memory-gib> --ctx <tokens> [--reserve <runtime-headroom-gib>]
+```
+
+`--ram` is the currently available capacity of the selected memory pool for this run, not the machine's advertised total. `--reserve` is additional runtime and workload headroom, which the estimate subtracts separately. Base both values on current device and workload evidence. Without context or runtime headroom, the helper will not report a definite fit. The skill decides whether to use a helper based on the OS, user goal, and available tools. Script output does not replace checking model capability, source, runtime compatibility, and hardware fit.
+
+### Scope and requirements
+
+- Current focus: `llama.cpp` and GGUF. Other local runtimes can be discussed, with unverified support clearly identified.
+- The repository does not bundle `llama.cpp` binaries or model weights, and does not download, install, or start services by default.
+- Model-source discovery needs network access; the model-search helper uses Hugging Face. If access is blocked, state the limitation and continue from user-provided files or source details.
+- The shell helpers need bash, `curl`, and `python3`; `jq` is optional. Hardware inspection depends on OS-native diagnostic tools, so platform coverage varies.
+- Covers inference and runtime tuning only; it does not train or fine-tune weights.

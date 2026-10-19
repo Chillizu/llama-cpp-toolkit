@@ -1,67 +1,42 @@
-# Bootstrap: from zero to a running llama-server
+# First local run
 
-Everything else in this skill assumes a `llama-server` binary and at least one model file already exist. This covers that one-time setup on a fresh machine. Run it once, then the rest of the workflow applies.
+This is a guided decision path, not a universal installer. The skill should inspect the actual machine and follow the user's intent; do not install software or fetch a model just because the request says “help me run a local LLM.”
 
-## 0. Check what you already have
+## 1. Inspect before proposing changes
 
-```bash
-command -v llama-server            # on PATH?
-[ -x "$HOME/llama.cpp/build/bin/llama-server" ] && echo source build present
-```
+Read-only checks should establish:
 
-If neither, continue. If `llama-server` exists, skip straight to **Verify the backend** and **Get a model file**.
+- OS and package/build tools available;
+- existing llama.cpp/`llama-server` binaries and their version;
+- actual backends/devices exposed by the installed build;
+- existing model directories, GGUF files, free storage, and free memory;
+- the task and operating constraints that affect model choice.
 
-## 1. Install or build llama.cpp
+Use the device helper where its platform coverage is adequate, then cross-check with OS-native and llama.cpp runtime output. See `device-detection.md` for limitations.
 
-Pick by your **detected backend** (`scripts/detect-device.sh` → `suggested_backend`) and OS.
+## 2. Choose setup based on current support
 
-**Package install** (fastest; often older or CPU-only):
-- Debian/Ubuntu: `sudo apt install llama.cpp`
-- macOS: `brew install llama.cpp`
-- Windows: official prebuilt releases
+If a compatible server already exists, reuse it. If not, inspect the current official llama.cpp installation/build guidance for this OS and the runtime/backend that the machine can actually use. Compare a supported package, release binary, or source build when more than one path fits. Explain version, backend, dependency, and maintenance tradeoffs.
 
-**Build from source** (recommended when you want a GPU backend that matches the hardware):
+Do not select a build flag only from the GPU vendor name, copy commands from another host, or assume a package manager provides the required backend. Show the proposed command and expected result before running it. Ask before installing packages, compiling, using elevated privileges, or editing persistent environment configuration.
 
-```bash
-git clone https://github.com/ggml-org/llama.cpp
-cd llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release <backend flag>
-cmake --build build --config Release -j
-```
+## 3. Select and obtain the model
 
-Backend flag by vendor (from detection):
+Choose the model family, architecture, task variant, and size tier using the user's workload and inspected memory budget; see `model-selection.md`. Search current model-source metadata and check the exact repository, license, compatible architecture/template, quantization, total file size, context, and whether all shards are needed. The live GGUF helper can shortlist files after the user task has identified useful candidate families.
 
-| vendor / GPU | cmake flag |
-|---|---|
-| NVIDIA | `-DGGML_CUDA=ON` |
-| Intel integrated / Arc | `-DGGML_VULKAN=ON` |
-| AMD discrete | `-DGGML_HIP=ON` (or `-DGGML_VULKAN=ON` as a simpler fallback) |
-| Apple Silicon | `-DGGML_METAL=ON` (default on macOS) |
-| CPU-only | *(no flag)* |
+Present the exact source, files, expected disk use, and download method. Ask before downloading. If the source is unavailable or metadata is ambiguous, state that and ask for a candidate URL or local path rather than guessing.
 
-Binary: `build/bin/llama-server` (add `build/bin` to `PATH` or set `LLAMA_SERVER`).
+For a split GGUF, make sure every shard belongs together and is downloaded before launching. Prefer source-provided integrity metadata when available; do not execute scripts or binaries from a model repository as part of model acquisition.
 
-## 2. Verify the backend
+## 4. Verify a minimal run
 
-```bash
-build/bin/llama-server --list-devices
-```
+Use only options supported by the installed `llama-server --help` and build. Start with a workload-appropriate context and conservative resource use derived from the model/runtime evidence. Preserve the exact command for review. Ask before starting the service if the user has not asked you to run it.
 
-Must list your GPU under the compiled backend (e.g. `Vulkan0: ...`, `CUDA0: ...`, `Metal: ...`). If it lists nothing but CPU, the build lacks that backend (rebuild with the flag) or the driver/runtime is missing (Vulkan ICD, CUDA driver, etc.). This is the ground truth — never trust `suggested_backend` alone.
+After an approved run:
 
-## 3. Get a model file
+1. Check that the server process remains alive and that its readiness endpoint indicates the model is ready.
+2. Check runtime logs/device output and memory use to confirm the expected backend and placement.
+3. Send a small representative request using the actual requested task mode.
+4. For tool use or multimodal requirements, test that capability specifically; a successful text response does not prove it works.
 
-1. Decide what fits via `scripts/recommend-models.sh "<name>" --ram <gib>`.
-2. Put the `.gguf` in a dedicated models dir (the manager's `MODEL_DIR`, e.g. `~/models`).
-3. Download:
-   - HF CLI: `huggingface-cli download <org>/<repo> <file>.gguf --local-dir ~/models`
-   - or `curl -L -o ~/models/<file>.gguf https://huggingface.co/<org>/<repo>/resolve/main/<file>.gguf`
-4. Networks that block HF: route through a proxy (`HTTPS_PROXY=socks5h://127.0.0.1:7891 curl ...` or `--proxy socks5h://...`).
-
-Keep a dedicated models dir; don't scatter `.gguf` files where the manager's recursive scan would pick up unrelated files.
-
-## 4. Wire into the rest of the skill
-
-- Point the tooling at your binary: `LLAMA_SERVER=/path/to/llama-server` (detect-device), `LLMCTL_SERVER=/path/to/llama-server` (llmctl-template).
-- Set `MODEL_DIR` in the template to your models dir.
-- Proceed to the main workflow: **Run** → **Tune** → **Agentic** → **Fix**.
+Only then proceed to measurement-led tuning in `tuning.md` or optional client integration in `agentic.md`.

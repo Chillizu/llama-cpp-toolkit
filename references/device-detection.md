@@ -1,35 +1,30 @@
-# Device detection
+# Inspect the machine
 
-How to map the machine to a runnable llama.cpp configuration, and how the JSON from `scripts/detect-device.sh` is meant to be read.
+Hardware discovery supports a model recommendation; it does not by itself prove a runtime backend works or determine the best model. Gather the strongest current evidence available and label estimates.
 
-## Detection principles (per OS)
+## What to inspect
 
-- **OS**: `uname -s` → linux / darwin / windows.
-- **GPU vendor + model**:
-  - Linux: `lspci -nn` filtering VGA / 3D controller / display controller. Vendor keywords: `intel`, `nvidia`, `AMD/Advanced Micro Devices/Radeon`, `Apple`.
-  - macOS: `system_profiler SPDisplaysDataType` (Chipset / Model lines).
-  - Cross-check the actual llama.cpp backend with `llama-server --list-devices` — it reports what the *compiled* backend actually sees, which is the ground truth for offload.
-- **GPU memory**:
-  - Dedicated VRAM: `nvidia-smi --query-gpu=memory.total`, or the device-local heap reported by `vulkaninfo --summary` when present.
-  - **Integrated / shared-memory GPUs** (Intel iGPU/Arc, Apple Unified Memory, many AMD APUs): the "VRAM" is a heap carved from **system RAM**. Nominal device memory is meaningless here — budget with **available** RAM minus what the OS/desktop reserves. `gpu_memory_gib: null` + `memory_type: "shared"` means: count against `ram_available_gib`.
-- **RAM**: Linux `free -b` MemAvailable; macOS `hw.memsize` (available is an estimate — confirm with htop/Activity Monitor).
-- **CPU**: Linux `lscpu -p` (logical/physical) and `lscpu -e` MAXMHZ tiers for `cpu_efficient` (non-performance cores = those with max boost clearly below the top tier; 0 if no P/E split); macOS `hw.logicalcpu` / `hw.physicalcpu` / `hw.perflevel1.logicalcpu`.
+- OS and relevant runtime/build tools.
+- CPU model, physical/logical cores, and architecture when the runtime depends on them.
+- Total and currently available system memory.
+- Every relevant GPU: model, dedicated or shared/unified memory, and currently free memory where readable.
+- Driver/runtime availability and the actual devices exposed by the selected inference engine.
+- Existing `llama-server` binaries, build/version, model directories, and other processes using memory.
 
-## Backend mapping (vendor → llama.cpp backend flag)
+First check for the user's existing runtime and model files. A working local runtime is more useful evidence than a backend guess based on GPU vendor. For llama.cpp, use the installed binary's `--list-devices` and startup/load output when available. Cross-check reported memory with OS-native tools if the result looks incomplete or implausible.
 
-| GPU | backend | typical flags |
-|---|---|---|
-| NVIDIA | CUDA | `-ngl -1` |
-| AMD discrete | ROCm (HSA) | `-ngl -1` |
-| Intel integrated / Arc | Vulkan | `-ngl -1 --no-mmap` |
-| Apple Silicon | Metal | `-ngl -1` |
-| none / CPU build | CPU | *(no GPU flags)* |
+## Helper script coverage and limitations
 
-`-ngl -1` = offload all layers. Only use it when the capacity math in `references/model-selection.md` fits; otherwise reduce `-ngl N` for partial offload (usually slower than full offload or full CPU — measure).
+`scripts/detect-device.sh` is a read-only helper for Linux and macOS environments with the expected system tools. It reports an OS, a preferred GPU adapter, memory estimates, CPU counts, notes, and a `suggested_backend`. The suggestion is only a starting point:
 
-## Output contract
+- Hybrid/multi-GPU selection is heuristic. Ask which GPU the user intends to use and verify the actual runtime's device list.
+- `nvidia-smi` and `vulkaninfo` can expose memory details when installed; absence of a value does not mean a GPU is unusable.
+- macOS available RAM from this helper is a coarse estimate. Confirm it with current system monitoring when fit is close.
+- Some Linux GPU memory layouts and drivers require native/vendor tools not covered by the helper.
+- On Windows, the script does not provide a complete hardware inventory. Use PowerShell or the installed runtime's own diagnostics; do not treat its Windows label as complete Windows support.
+- CPU efficiency-core counts are estimates. Do not use them to pin threads without checking CPU topology.
 
-`scripts/detect-device.sh` prints a human summary then one JSON line:
+The helper emits a human summary and a JSON object similar to:
 
 ```json
 {
@@ -44,17 +39,20 @@ How to map the machine to a runnable llama.cpp configuration, and how the JSON f
   "cpu_physical": 16,
   "cpu_efficient": 8,
   "suggested_backend": "vulkan",
-  "notes": ["integrated/shared-memory GPU: ..."]
+  "notes": []
 }
 ```
 
-Field semantics:
+Interpret `gpu_memory_gib: null` together with `memory_type` and `notes`; it can mean shared memory or an unreadable dedicated-memory value. Do not count total unified/system RAM as entirely available to model weights.
 
-- `gpu_memory_gib`: `null` when the backend is shared-memory or the value couldn't be read. Treat as "no dedicated VRAM budget".
-- `memory_type`: `dedicated` | `shared`.
-- `cpu_efficient`: an estimate of non-performance (efficiency/LP) cores from `lscpu -e` max-boost-MHz tiers; `0` means no hybrid split detected. Use only as a hint — for exact P/E pinning read the CPU topology directly.
-- `suggested_backend`: first guess; always confirm with `llama-server --list-devices` (a build compiled without the right backend silently falls back to CPU).
+## Select and verify a backend
 
-## Verification
+Do not turn a vendor-to-backend table into an automatic build instruction. The viable backend depends on the OS, GPU generation, driver, installed llama.cpp build, and user preference. Use this sequence:
 
-Run `scripts/detect-device.sh` and cross-check the reported GPU against `llama-server --list-devices`. If the backend shows the GPU, offload flags will work. If `suggested_backend` says `vulkan` but `--list-devices` shows no GPU, the build is CPU-only or the driver is missing.
+1. Inspect an existing `llama-server` and its version before proposing a new build.
+2. Read the runtime's current `--list-devices`, build features, and startup output.
+3. If no usable runtime exists, compare currently supported install/build paths for the detected OS and GPU, and explain tradeoffs.
+4. Present the proposed package/build command before execution. Ask before installing dependencies, compiling, or changing persistent system configuration.
+5. After setup, verify the device with the runtime itself and perform a small load before claiming GPU offload works.
+
+Backend names such as CUDA, ROCm/HIP, Vulkan, Metal, and CPU are possibilities to check against current runtime support, not a guaranteed mapping from GPU vendor. Use the backend actually exposed by the installed build.
